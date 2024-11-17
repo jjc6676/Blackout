@@ -8,14 +8,28 @@
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var contactManager = ContactManager()
+    @StateObject private var groupManager = GroupManager()
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        TabView {
+            ContactListView()
+                .tabItem {
+                    Label("Contacts", systemImage: "person.fill")
+                }
+            
+            HiddenContactsView()
+                .tabItem {
+                    Label("Hidden", systemImage: "eye.slash.fill")
+                }
+            
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
+                }
         }
-        .padding()
+        .environmentObject(contactManager)
+        .environmentObject(groupManager)
     }
 }
 

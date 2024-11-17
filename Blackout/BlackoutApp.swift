@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct BlackoutApp: App {
+    @StateObject private var contactManager = ContactManager()
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(contactManager)
         }
     }
 }

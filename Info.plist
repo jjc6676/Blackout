@@ -1,0 +1,4 @@
+<key>NSContactsUsageDescription</key>
+<string>BlackOut needs access to your contacts to enable hiding and masking features.</string>
+<key>NSFaceIDUsageDescription</key>
+<string>BlackOut uses Face ID to protect your data.</string> 
