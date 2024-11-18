@@ -1,114 +1,129 @@
 import SwiftUI
+import Contacts
 
 struct ContactListView: View {
     @EnvironmentObject private var contactManager: ContactManager
+    @EnvironmentObject private var groupManager: GroupManager
+    @State private var searchText = ""
+    @State private var isLoading = false
     @State private var showingPermissionAlert = false
     @State private var selectedContact: Contact?
+    @State private var showingActionSheet = false
     
-    var visibleContacts: [Contact] {
-        contactManager.filteredContacts.filter { !$0.isHidden }
+    var filteredContacts: [String: [Contact]] {
+        let filtered = searchText.isEmpty ? contactManager.contacts :
+            contactManager.contacts.filter {
+                $0.name.lowercased().contains(searchText.lowercased()) ||
+                $0.phoneNumber.contains(searchText)
+            }
+        return Dictionary(grouping: filtered) { String($0.name.prefix(1).uppercased()) }
+    }
+    
+    var sortedSections: [String] {
+        filteredContacts.keys.sorted()
     }
     
     var body: some View {
-        NavigationView {
-            List {
-                ForEach(visibleContacts) { contact in
-                    ContactRow(contact: contact) {
-                        selectedContact = contact
-                    }
-                }
-            }
-            .searchable(text: $contactManager.searchText, prompt: "Search contacts")
-            .navigationTitle("Contacts")
-            .task {
-                do {
-                    let authorized = try await contactManager.requestAccess()
-                    if authorized {
-                        try await contactManager.fetchContacts()
-                    } else {
-                        showingPermissionAlert = true
-                    }
-                } catch {
-                    print("Error: \(error)")
-                }
-            }
-            .alert("Contacts Permission Required", isPresented: $showingPermissionAlert) {
-                Button("OK", role: .cancel) { }
-            }
-            .sheet(item: $selectedContact) { contact in
-                BlackOutActionSheet(contact: contact)
-            }
-        }
-    }
-}
-
-struct BlackOutActionSheet: View {
-    let contact: Contact
-    @EnvironmentObject private var contactManager: ContactManager
-    @Environment(\.dismiss) private var dismiss
-    @State private var showingConfirmation = false
-    
-    var body: some View {
-        NavigationView {
-            List {
-                Section {
-                    Text("Name: \(contact.displayName)")
-                    Text("Phone: \(contact.displayPhoneNumber)")
-                }
-                
-                Section {
-                    Button(contact.isHidden ? "UnBlackOut Contact" : "BlackOut Contact") {
-                        showingConfirmation = true
-                    }
-                    .foregroundColor(contact.isHidden ? .green : .red)
-                }
-            }
-            .navigationTitle("Contact Actions")
-            .navigationBarItems(trailing: Button("Done") { dismiss() })
-            .alert(contact.isHidden ? "Restore Contact?" : "Hide Contact?", isPresented: $showingConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button(contact.isHidden ? "Restore" : "Hide") {
-                    Task {
-                        do {
-                            try await contactManager.toggleBlackOut(for: contact)
-                            dismiss()
-                        } catch {
-                            print("Error toggling blackout: \(error)")
+        List {
+            if contactManager.contacts.isEmpty {
+                ContentUnavailableView(
+                    "No Contacts",
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text("Grant access to your contacts or add some in the Contacts app")
+                )
+            } else {
+                ForEach(sortedSections, id: \.self) { section in
+                    Section(header: Text(section)) {
+                        ForEach(filteredContacts[section] ?? []) { contact in
+                            Button {
+                                selectedContact = contact
+                                showingActionSheet = true
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(contact.name)
+                                        .font(.headline)
+                                        .foregroundColor(.primary)
+                                    Text(contact.phoneNumber)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
                         }
                     }
                 }
-            } message: {
-                if contact.isHidden {
-                    Text("This contact will be restored to your Contacts app.")
-                } else {
-                    Text("This contact will be hidden from your Contacts app.")
+            }
+        }
+        .searchable(text: $searchText, prompt: "Search contacts")
+        .navigationTitle("Contacts")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    Task {
+                        await refreshContacts()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .disabled(isLoading)
+            }
+        }
+        .task {
+            await loadContacts()
+        }
+        .alert("Contact Access Required", isPresented: $showingPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Please grant access to your contacts in Settings.")
+        }
+        .confirmationDialog("Hide Contact?", isPresented: $showingActionSheet) {
+            if let contact = selectedContact {
+                Button("Hide Contact", role: .destructive) {
+                    Task {
+                        try? await contactManager.toggleHideContact(contact)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            if let contact = selectedContact {
+                Text(contact.name)
             }
         }
     }
-}
-
-struct ContactRow: View {
-    let contact: Contact
-    let action: () -> Void
     
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text(contact.displayName)
-                        .font(.headline)
-                    Text(contact.displayPhoneNumber)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                Image(systemName: contact.isHidden ? "eye.slash.fill" : "eye.fill")
-                    .foregroundColor(contact.isHidden ? .red : .primary)
-            }
-            .padding(.vertical, 4)
+    private func loadContacts() async {
+        guard !isLoading else { return }
+        
+        isLoading = true
+        defer { isLoading = false }
+        
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try await contactManager.fetchContacts()
+            }.value
+        } catch {
+            print("Error loading contacts: \(error)")
+            showingPermissionAlert = true
+        }
+    }
+    
+    private func refreshContacts() async {
+        guard !isLoading else { return }
+        
+        isLoading = true
+        defer { isLoading = false }
+        
+        do {
+            try await contactManager.refreshContacts()
+            print("Contacts refreshed successfully")
+        } catch {
+            print("Error refreshing contacts: \(error)")
         }
     }
 }

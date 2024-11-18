@@ -2,54 +2,79 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var contactManager: ContactManager
-    @State private var showingNewGroupSheet = false
+    @EnvironmentObject private var groupManager: GroupManager
+    @State private var showingBackupPicker = false
+    @State private var showingRestoreAlert = false
+    @State private var backupKey: String?
     
     var body: some View {
-        NavigationView {
-            List {
-                Section("Contact Groups") {
-                    NavigationLink(destination: GroupsView()) {
-                        HStack {
-                            Image(systemName: "folder.fill")
-                            Text("Manage Groups")
-                        }
+        List {
+            Section("Backup") {
+                Button {
+                    Task {
+                        await DataManager.shared.createBackup(
+                            type: .quick,
+                            groups: groupManager.groups,
+                            contactManager: contactManager
+                        )
                     }
+                } label: {
+                    Label("Create Backup", systemImage: "square.and.arrow.up")
                 }
                 
-                Section("App Settings") {
-                    // Placeholder for future settings
-                    NavigationLink(destination: EmptyView()) {
-                        HStack {
-                            Image(systemName: "app.badge.fill")
-                            Text("App Icon")
-                        }
-                    }
-                    
-                    NavigationLink(destination: EmptyView()) {
-                        HStack {
-                            Image(systemName: "bell.fill")
-                            Text("Notifications")
-                        }
-                    }
-                    
-                    NavigationLink(destination: EmptyView()) {
-                        HStack {
-                            Image(systemName: "lock.fill")
-                            Text("Privacy & Security")
-                        }
-                    }
+                Button {
+                    showingBackupPicker = true
+                } label: {
+                    Label("Restore Backup", systemImage: "square.and.arrow.down")
+                }
+            }
+            
+            Section("About") {
+                Link(destination: URL(string: "https://www.example.com/privacy")!) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
                 }
                 
-                Section("About") {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text("1.0.0")
-                            .foregroundColor(.secondary)
+                Link(destination: URL(string: "https://www.example.com/terms")!) {
+                    Label("Terms of Service", systemImage: "doc.text")
+                }
+                
+                Label("Version 1.0", systemImage: "info.circle")
+            }
+        }
+        .navigationTitle("Settings")
+        .fileImporter(
+            isPresented: $showingBackupPicker,
+            allowedContentTypes: [.json]
+        ) { result in
+            switch result {
+            case .success(let url):
+                backupKey = url.lastPathComponent
+                showingRestoreAlert = true
+            case .failure(let error):
+                print("Error selecting backup: \(error)")
+            }
+        }
+        .alert("Restore Backup", isPresented: $showingRestoreAlert) {
+            Button("Restore", role: .destructive) {
+                if let key = backupKey {
+                    Task {
+                        try? await DataManager.shared.restoreBackup(
+                            key: key,
+                            groupManager: groupManager,
+                            contactManager: contactManager
+                        )
                     }
                 }
             }
-            .navigationTitle("Settings")
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will replace all your current data. Are you sure?")
         }
+    }
+}
+
+#Preview {
+    NavigationStack {
+        SettingsView()
     }
 } 

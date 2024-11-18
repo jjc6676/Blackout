@@ -1,134 +1,249 @@
 import Contacts
-import LocalAuthentication
-import Combine
+import SwiftUI
 
+@MainActor
 class ContactManager: ObservableObject {
     @Published private(set) var contacts: [Contact] = []
-    @Published var searchText: String = ""
+    @Published private(set) var hiddenContacts: [Contact] = []
+    @Published var searchText = ""
     
     private let contactStore = CNContactStore()
-    private let keychainManager = KeychainManager.shared
     private let hiddenContactsKey = "com.blackout.hiddenContacts"
+    private var hasLoadedHidden = false
     
     var filteredContacts: [Contact] {
-        let sortedContacts = contacts.sorted { $0.name.lowercased() < $1.name.lowercased() }
         if searchText.isEmpty {
-            return sortedContacts
+            return contacts
         }
-        return sortedContacts.filter { contact in
+        return contacts.filter { contact in
             contact.name.lowercased().contains(searchText.lowercased()) ||
             contact.phoneNumber.contains(searchText)
         }
     }
     
-    func requestAccess() async throws -> Bool {
-        try await contactStore.requestAccess(for: .contacts)
+    init() {
+        Task {
+            await loadInitialContacts()
+        }
+    }
+    
+    private func loadInitialContacts() async {
+        do {
+            try await loadHiddenContacts()
+            try await fetchContacts()
+        } catch {
+            print("Error loading initial contacts: \(error)")
+        }
     }
     
     func fetchContacts() async throws {
-        let keysToFetch = [
+        let keys = [
             CNContactGivenNameKey,
-            CNContactFamilyNameKey,
-            CNContactPhoneNumbersKey
+            CNContactPhoneNumbersKey,
+            CNContactIdentifierKey
         ] as [CNKeyDescriptor]
         
-        let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var newContacts: [Contact] = []
         
-        var fetchedContacts: [Contact] = []
-        try contactStore.enumerateContacts(with: request) { contact, _ in
-            let phoneNumber = contact.phoneNumbers.first?.value.stringValue ?? ""
-            fetchedContacts.append(Contact(
-                id: contact.identifier,
-                name: "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces),
-                phoneNumber: phoneNumber,
-                isHidden: false
-            ))
-        }
+        // Store existing hidden contacts IDs
+        let hiddenContactIds = Set(hiddenContacts.map { $0.id })
         
-        DispatchQueue.main.async {
-            self.contacts = fetchedContacts
-            self.loadHiddenContacts()
-        }
-    }
-    
-    func toggleBlackOut(for contact: Contact) async throws {
-        var updatedContact = contact
-        updatedContact.isHidden.toggle()
-        
-        if updatedContact.isHidden {
-            updatedContact.maskedName = "Hidden Contact \(Int.random(in: 1000...9999))"
-            updatedContact.maskedPhoneNumber = String(repeating: "•", count: 10)
-            try await removeFromContactsApp(contactId: contact.id)
-        } else {
-            try await restoreToContactsApp(contact: contact)
-        }
-        
-        if let index = contacts.firstIndex(where: { $0.id == contact.id }) {
-            DispatchQueue.main.async {
-                self.contacts[index] = updatedContact
+        try await Task.detached(priority: .userInitiated) { [contactStore] in
+            try contactStore.enumerateContacts(with: request) { contact, _ in
+                if let phoneNumber = contact.phoneNumbers.first?.value.stringValue {
+                    let contactId = contact.identifier
+                    let isHidden = hiddenContactIds.contains(contactId)
+                    
+                    let newContact = Contact(
+                        id: contactId,
+                        name: contact.givenName,
+                        phoneNumber: phoneNumber,
+                        isHidden: isHidden,
+                        dateHidden: isHidden ? Date() : nil
+                    )
+                    newContacts.append(newContact)
+                }
             }
-        }
-        
-        try saveHiddenContacts()
-    }
-    
-    private func removeFromContactsApp(contactId: String) async throws {
-        let keysToFetch = [
-            CNContactGivenNameKey,
-            CNContactFamilyNameKey,
-            CNContactPhoneNumbersKey
-        ] as [CNKeyDescriptor]
-        
-        let predicate = CNContact.predicateForContacts(withIdentifiers: [contactId])
-        
-        let contacts = try contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch)
-        guard let contact = contacts.first else { return }
-        
-        let request = CNSaveRequest()
-        request.delete(contact.mutableCopy() as! CNMutableContact)
-        
-        try contactStore.execute(request)
-    }
-    
-    private func restoreToContactsApp(contact: Contact) async throws {
-        let mutableContact = CNMutableContact()
-        
-        let nameComponents = contact.name.components(separatedBy: " ")
-        mutableContact.givenName = nameComponents.first ?? ""
-        if nameComponents.count > 1 {
-            mutableContact.familyName = nameComponents.dropFirst().joined(separator: " ")
-        }
-        
-        let phoneNumber = CNPhoneNumber(stringValue: contact.phoneNumber)
-        let phoneNumberValue = CNLabeledValue(label: CNLabelHome, value: phoneNumber)
-        mutableContact.phoneNumbers = [phoneNumberValue]
-        
-        let request = CNSaveRequest()
-        request.add(mutableContact, toContainerWithIdentifier: nil)
-        
-        try contactStore.execute(request)
-    }
-    
-    private func saveHiddenContacts() throws {
-        let hiddenContacts = contacts.filter { $0.isHidden }
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(hiddenContacts)
-        try keychainManager.save(data, service: hiddenContactsKey, account: "blackout")
+            
+            await MainActor.run {
+                // Filter out hidden contacts
+                self.contacts = newContacts.filter { !hiddenContactIds.contains($0.id) }
+                    .sorted { $0.name.lowercased() < $1.name.lowercased() }
+                print("Contacts loaded: \(newContacts.count)")
+            }
+        }.value
     }
     
     private func loadHiddenContacts() {
-        do {
-            let data = try keychainManager.load(service: hiddenContactsKey, account: "blackout")
-            let decoder = JSONDecoder()
-            let hiddenContacts = try decoder.decode([Contact].self, from: data)
-            
-            for hiddenContact in hiddenContacts {
-                if let index = contacts.firstIndex(where: { $0.id == hiddenContact.id }) {
-                    contacts[index] = hiddenContact
+        print("Loading hidden contacts...")
+        if let data = UserDefaults.standard.data(forKey: hiddenContactsKey),
+           let loadedContacts = try? JSONDecoder().decode([Contact].self, from: data) {
+            self.hiddenContacts = loadedContacts
+            print("Loaded \(loadedContacts.count) hidden contacts:")
+            for contact in loadedContacts {
+                print("  - \(contact.name) (ID: \(contact.id))")
+            }
+        }
+        print("Finished loading hidden contacts")
+    }
+    
+    private func removeFromContactsApp(contact: Contact) async throws {
+        print("Removing contact from Contacts app: \(contact.name)")
+        let predicate = CNContact.predicateForContacts(withIdentifiers: [contact.id])
+        let keysToFetch = [CNContactIdentifierKey] as [CNKeyDescriptor]
+        let contacts = try contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch)
+        
+        guard let cnContact = contacts.first else {
+            print("Contact not found in Contacts app")
+            return
+        }
+        
+        let request = CNSaveRequest()
+        request.delete(cnContact.mutableCopy() as! CNMutableContact)
+        try contactStore.execute(request)
+        print("Successfully removed contact from Contacts app")
+    }
+    
+    func refreshContacts() async throws {
+        print("Starting contacts refresh...")
+        
+        let keys = [
+            CNContactGivenNameKey,
+            CNContactPhoneNumbersKey,
+            CNContactIdentifierKey
+        ] as [CNKeyDescriptor]
+        
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var newContacts: [Contact] = []
+        
+        // Store existing contacts' hidden status
+        let hiddenContactIds = Set(hiddenContacts.map { $0.id })
+        
+        try await Task.detached(priority: .userInitiated) { [contactStore] in
+            try contactStore.enumerateContacts(with: request) { contact, _ in
+                if let phoneNumber = contact.phoneNumbers.first?.value.stringValue {
+                    let contactId = contact.identifier
+                    
+                    // Preserve hidden status
+                    let isHidden = hiddenContactIds.contains(contactId)
+                    
+                    // Create contact with preserved status
+                    let newContact = Contact(
+                        id: contactId,
+                        name: contact.givenName,
+                        phoneNumber: phoneNumber,
+                        isHidden: isHidden,
+                        dateHidden: isHidden ? Date() : nil
+                    )
+                    newContacts.append(newContact)
                 }
             }
-        } catch {
-            print("No hidden contacts found or error loading: \(error)")
+        }.value
+        
+        await MainActor.run {
+            // Important: Only update visible contacts, don't touch hidden ones
+            contacts = newContacts.filter { !hiddenContactIds.contains($0.id) }
+                .sorted { $0.name.lowercased() < $1.name.lowercased() }
+            
+            print("Refresh completed - Found \(newContacts.count) contacts")
+            print("Visible contacts: \(contacts.count)")
+            print("Hidden contacts: \(hiddenContacts.count)")
         }
+    }
+    
+    func toggleHideContact(_ contact: Contact) async throws {
+        print("Starting toggleHideContact for \(contact.name) (ID: \(contact.id))")
+        
+        if contact.isHidden {
+            // Unhiding contact - restore to Contacts app
+            print("Unhiding contact: \(contact.name) (ID: \(contact.id))")
+            let newContactId = try await restoreToContactsApp(contact: contact)
+            
+            var updatedContact = contact
+            updatedContact.isHidden = false
+            updatedContact.dateHidden = nil
+            updatedContact.id = newContactId
+            
+            // Update our internal lists
+            contacts.append(updatedContact)
+            hiddenContacts.removeAll { $0.id == contact.id }
+            
+            // Update all groups that contained this contact
+            NotificationCenter.default.post(
+                name: .contactIdChanged,
+                object: nil,
+                userInfo: [
+                    "oldId": contact.id,
+                    "newId": newContactId
+                ]
+            )
+            
+            print("Contact \(contact.name) restored with new ID: \(newContactId)")
+        } else {
+            // Hiding contact - remove from Contacts app
+            print("Hiding contact: \(contact.name) (ID: \(contact.id))")
+            try await removeFromContactsApp(contact: contact)
+            
+            var updatedContact = contact
+            updatedContact.isHidden = true
+            updatedContact.dateHidden = Date()
+            
+            // Update our internal lists
+            hiddenContacts.append(updatedContact)
+            contacts.removeAll { $0.id == contact.id }
+            
+            print("Contact \(contact.name) (ID: \(contact.id)) removed from Contacts app and moved to hidden")
+        }
+        
+        try saveHiddenContacts()
+        
+        await MainActor.run {
+            contacts.sort { $0.name.lowercased() < $1.name.lowercased() }
+            hiddenContacts.sort { $0.name.lowercased() < $1.name.lowercased() }
+        }
+    }
+    
+    private func saveHiddenContacts() throws {
+        print("Saving hidden contacts...")
+        if let encoded = try? JSONEncoder().encode(hiddenContacts) {
+            UserDefaults.standard.set(encoded, forKey: hiddenContactsKey)
+            print("Saved \(hiddenContacts.count) hidden contacts:")
+            for contact in hiddenContacts {
+                print("  - \(contact.name) (ID: \(contact.id))")
+            }
+        }
+        print("Finished saving hidden contacts")
+    }
+    
+    private func restoreToContactsApp(contact: Contact) async throws -> String {
+        print("Restoring contact to Contacts app: \(contact.name) (ID: \(contact.id))")
+        
+        let newContact = CNMutableContact()
+        newContact.givenName = contact.name
+        let phoneNumber = CNPhoneNumber(stringValue: contact.phoneNumber)
+        newContact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMain, value: phoneNumber)]
+        
+        let request = CNSaveRequest()
+        request.add(newContact, toContainerWithIdentifier: nil)
+        
+        try contactStore.execute(request)
+        print("New contact created with system ID: \(newContact.identifier)")
+        return newContact.identifier
+    }
+    
+    func handleAppBecameActive() {
+        Task {
+            do {
+                try await refreshContacts()
+            } catch {
+                print("Error refreshing contacts: \(error)")
+            }
+        }
+    }
+    
+    enum ContactError: Error {
+        case deletionFailed
+        case restorationFailed
     }
 } 

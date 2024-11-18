@@ -1,10 +1,11 @@
 import Foundation
 
 struct Contact: Identifiable, Hashable, Codable {
-    let id: String
+    var id: String
     let name: String
     let phoneNumber: String
     var isHidden: Bool
+    var dateHidden: Date?
     var maskedName: String?
     var maskedPhoneNumber: String?
     
