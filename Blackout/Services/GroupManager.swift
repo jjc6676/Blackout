@@ -101,46 +101,54 @@ class GroupManager: ObservableObject {
     
     // MARK: - Batch Operations
     func hideAllContactsInGroup(_ group: Group, using contactManager: ContactManager) async {
-        print("Starting batch hide for group: \(group.name)")
-        for contactId in group.contacts {
-            if let contact = contactManager.contacts.first(where: { $0.id == contactId }) {
-                do {
-                    try await contactManager.toggleHideContact(contact)
-                    print("Hidden contact: \(contact.name)")
-                } catch {
-                    print("Error hiding contact \(contact.name): \(error)")
+        await Task.detached {
+            print("Starting batch hide for group: \(group.name)")
+            for contactId in group.contacts {
+                if let contact = await contactManager.contacts.first(where: { $0.id == contactId }) {
+                    do {
+                        try await contactManager.toggleHideContact(contact)
+                        print("Hidden contact: \(contact.name)")
+                    } catch {
+                        print("Error hiding contact \(contact.name): \(error)")
+                    }
                 }
             }
-        }
-        print("Completed batch hide for group: \(group.name)")
+            print("Completed batch hide for group: \(group.name)")
+        }.value
     }
     
     func unhideAllContactsInGroup(_ group: Group, using contactManager: ContactManager) async {
-        print("Starting batch unhide for group: \(group.name)")
-        for contactId in group.contacts {
-            if let contact = contactManager.hiddenContacts.first(where: { $0.id == contactId }) {
-                do {
-                    try await contactManager.toggleHideContact(contact)
-                    print("Unhidden contact: \(contact.name)")
-                } catch {
-                    print("Error unhiding contact \(contact.name): \(error)")
+        await Task.detached {
+            print("Starting batch unhide for group: \(group.name)")
+            for contactId in group.contacts {
+                if let contact = await contactManager.hiddenContacts.first(where: { $0.id == contactId }) {
+                    do {
+                        try await contactManager.toggleHideContact(contact)
+                        print("Unhidden contact: \(contact.name)")
+                    } catch {
+                        print("Error unhiding contact \(contact.name): \(error)")
+                    }
                 }
             }
-        }
-        print("Completed batch unhide for group: \(group.name)")
+            print("Completed batch unhide for group: \(group.name)")
+        }.value
     }
     
     // MARK: - Storage
     private func loadGroups() {
-        print("Loading groups...")
-        if let data = UserDefaults.standard.data(forKey: groupsKey),
-           let loadedGroups = try? JSONDecoder().decode([Group].self, from: data) {
-            self.groups = loadedGroups
-            print("Groups loaded with details:")
-            for group in groups {
-                print("Group '\(group.name)' has \(group.contacts.count) contacts:")
-                for contactId in group.contacts {
-                    print("  - Contact ID: \(contactId)")
+        Task.detached {
+            print("Loading groups...")
+            if let data = UserDefaults.standard.data(forKey: self.groupsKey),
+               let loadedGroups = try? JSONDecoder().decode([Group].self, from: data) {
+                await MainActor.run {
+                    self.groups = loadedGroups
+                }
+                print("Groups loaded with details:")
+                for group in loadedGroups {
+                    print("Group '\(group.name)' has \(group.contacts.count) contacts:")
+                    for contactId in group.contacts {
+                        print("  - Contact ID: \(contactId)")
+                    }
                 }
             }
         }

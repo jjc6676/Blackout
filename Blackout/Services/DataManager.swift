@@ -1,10 +1,19 @@
 import Foundation
 import SwiftUI
+import Contacts
 
-// First, let's define BackupData structure
-struct BackupData: Codable {
-    let contacts: [Contact]
-    let groups: [Group]
+// Define AppError enum directly in this file
+enum AppError: Error {
+    // Backup related errors
+    case invalidBackup
+    case encodingError
+    case decodingError
+    case backupNotFound
+    
+    // Contact related errors
+    case restorationFailed
+    case deletionFailed
+    case accessDenied
 }
 
 @MainActor
@@ -15,8 +24,19 @@ class DataManager {
     func createBackup(type: BackupType, groups: [Group], contactManager: ContactManager) async {
         let contacts = contactManager.contacts
         
-        // Create BackupData with both contacts and groups
-        let backupData = BackupData(contacts: contacts, groups: groups)
+        // Get current settings
+        let settings = UserDefaults.standard.dictionaryRepresentation()
+            .filter { $0.key.hasPrefix("backup") }
+            .mapValues { "\($0)" }
+        
+        // Create BackupData with all required parameters
+        let backupData = BackupData(
+            contacts: contacts,
+            groups: groups,
+            settings: settings,
+            type: type
+        )
+        
         guard let encodedData = try? JSONEncoder().encode(backupData) else { return }
         
         let backup = Backup(
@@ -26,6 +46,12 @@ class DataManager {
             data: encodedData
         )
         
+        if let encoded = try? JSONEncoder().encode(backup) {
+            UserDefaults.standard.set(encoded, forKey: backup.id.uuidString)
+        }
+    }
+    
+    func saveBackup(_ backup: Backup) {
         if let encoded = try? JSONEncoder().encode(backup) {
             UserDefaults.standard.set(encoded, forKey: backup.id.uuidString)
         }
@@ -54,7 +80,7 @@ class DataManager {
         // Get all backups and find the one we want
         let allBackups = getAllBackups()
         guard let backup = allBackups.first(where: { $0.id.uuidString == key }) else {
-            throw BackupError.backupNotFound
+            throw AppError.backupNotFound
         }
         
         let decoder = JSONDecoder()
@@ -76,10 +102,3 @@ class DataManager {
         print("Backup restored: \(backupData.contacts.count) contacts, \(backupData.groups.count) groups")
     }
 }
-
-enum BackupError: Error {
-    case invalidBackup
-    case encodingError
-    case decodingError
-    case backupNotFound
-} 

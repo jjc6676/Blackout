@@ -7,7 +7,9 @@
 		<string>IntentIntent</string>
 	</array>
 	<key>NSContactsUsageDescription</key>
-	<string>BlackOut needs access to your contacts to enable hiding and masking features.</string>
+	<string>This app needs access to contacts to allow you to manage and backup your contacts.</string>
+	<key>NSContactsWriteOnlyAccessUsageDescription</key>
+	<string>This app needs write access to contacts to restore backups and manage hidden contacts.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>BlackOut uses Face ID to protect your data.</string>
 	<key>UILaunchScreen</key>
